@@ -1,33 +1,105 @@
 import { Hono } from "hono";
+import { zValidator } from "@hono/zod-validator";
 import { db } from "../db";
-import { products } from "../db/schema";
-import { requireAuth } from "../middlewares/auth";
+import { products, productOptions, productVariants } from "../db/schema";
+import { eq, desc } from "drizzle-orm";
+import { requireAdmin } from "../middlewares/admin";
+import { createProductSchema } from "../lib/validations/product";
 
 const app = new Hono();
 
-// Public route: Fetch all products
+// ============================================================================
+// PUBLIC: GET /api/products (Catalog List)
+// ============================================================================
 app.get("/", async (c) => {
-  const allProducts = await db.select().from(products);
-  return c.json(allProducts);
+  const allProducts = await db.query.products.findMany({
+    with: {
+      category: true,
+      variants: true,
+    },
+    orderBy: [desc(products.createdAt)],
+  });
+
+  return c.json({ data: allProducts });
 });
 
-// Protected route: Add new product (Requires active Auth session)
-app.post("/", requireAuth, async (c) => {
-  const user = c.get("user");
-  const body = await c.req.json();
+// ============================================================================
+// PUBLIC: GET /api/products/:slug (Detailed Product View)
+// ============================================================================
+app.get("/:slug", async (c) => {
+  const slug = c.req.param("slug");
 
-  const newProduct = await db
-    .insert(products)
-    .values({
-      title: body.title,
-      slug: body.slug,
-      price: body.price,
-      description: body.description,
-      stock: body.stock,
-    })
-    .returning();
+  const product = await db.query.products.findFirst({
+    where: eq(products.slug, slug),
+    with: {
+      category: true,
+      options: true,
+      variants: true,
+    },
+  });
 
-  return c.json({ message: "Product created", product: newProduct[0], createdBy: user.email }, 201);
+  if (!product) {
+    return c.json({ error: "Product not found" }, 404);
+  }
+
+  return c.json({ data: product });
+});
+
+// ============================================================================
+// ADMIN: POST /api/products (Create Product, Options & Variants)
+// ============================================================================
+app.post("/", requireAdmin, zValidator("json", createProductSchema), async (c) => {
+  const body = c.req.valid("json");
+
+  // Execute in a single atomic transaction
+  const result = await db.transaction(async (tx) => {
+    // 1. Insert Base Product
+    const [newProduct] = await tx
+      .insert(products)
+      .values({
+        title: body.title,
+        slug: body.slug,
+        description: body.description,
+        categoryId: body.categoryId ?? null,
+        basePrice: body.basePrice.toString(),
+        imageUrl: body.imageUrl,
+        specs: body.specs,
+      })
+      .returning();
+
+    // 2. Insert Options (if provided)
+    if (body.options.length > 0) {
+      await tx.insert(productOptions).values(
+        body.options.map((opt) => ({
+          productId: newProduct.id,
+          name: opt.name,
+          values: opt.values,
+        }))
+      );
+    }
+
+    // 3. Insert Variants
+    const createdVariants = await tx
+      .insert(productVariants)
+      .values(
+        body.variants.map((variant) => ({
+          productId: newProduct.id,
+          sku: variant.sku,
+          price: variant.price.toString(),
+          stock: variant.stock,
+          imageUrl: variant.imageUrl,
+          options: variant.options,
+        }))
+      )
+      .returning();
+
+    return {
+      ...newProduct,
+      variants: createdVariants,
+    };
+  });
+
+  return c.json({ data: result }, 201);
 });
 
 export default app;

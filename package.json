@@ -3,11 +3,13 @@
   "scripts": {
     "dev": "bun run --hot src/index.ts",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "bun --env-file=.env src/db/migrate.ts"
+    "db:migrate": "bun --env-file=.env src/db/migrate.ts",
+    "db:studio": "bunx drizzle-kit studio"
   },
   "dependencies": {
     "@better-auth/drizzle-adapter": "^1.7.5",
     "@hono/node-server": "^2.1.1",
+    "@hono/zod-validator": "^0.9.1",
     "@neondatabase/serverless": "^1.1.0",
     "better-auth": "^1.7.5",
     "dotenv": "^17.4.2",
